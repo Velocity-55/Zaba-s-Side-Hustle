@@ -1,8 +1,9 @@
 --[[
     Dealer -> Deliver -> Buyer loop  |  Solara
     RightShift = open/close menu.
-    Dealer: E -> adjustable delay -> 1.  Buyer: E.
-    After each delivery: hold LMB, release, press 1.
+    Dealer: "Mystery Dealer" / DealerPrompt.  Buyer: "Delivery Recipient".
+    Sequence: E -> adjustable delay -> 1  |  delivery: E
+    After each delivery: confirm slot 1 is equipped, hold LMB, release, press 1.
     Cycle repeats every 45.5s (measured from cycle start).
 ]]
 
@@ -20,7 +21,7 @@ local CONFIG = {
     DealerPos  = nil,
     BuyerPos   = nil,
     Cycle      = 45.5,
-    MenuDelay  = 0.33,
+    MenuDelay  = 1.00,
     AcceptWait = 2.0,
     DeliverWait= 1.5,
     Taps       = 3,
@@ -28,7 +29,11 @@ local CONFIG = {
     LmbHold    = 5.3,
     Radius     = 14,
     AutoLoad   = false,
-    NpcPatterns     = { "dealer", "package", "delivery", "courier", "mail" },
+    DealerName      = "Mystery Dealer",
+    BuyerName       = "Delivery Recipient",
+    DealerPrompt    = "DealerPrompt",
+    NpcPatterns     = { "mystery dealer", "dealer", "package", "delivery", "courier" },
+    BuyerPatterns   = { "delivery recipient", "recipient", "customer", "buyer", "client", "drop" },
     PackagePatterns = { "package", "parcel", "delivery", "box", "mail", "crate" },
 }
 
@@ -73,7 +78,6 @@ local function readCfgFile()
     return nil
 end
 
--- auto-load gate: read the flag first, apply everything only if it was on
 do
     local startup = readCfgFile()
     if startup then
@@ -96,6 +100,10 @@ local function matchAny(str, pats)
     return false
 end
 
+local function sameName(a, b)
+    return string.lower(tostring(a or "")) == string.lower(tostring(b or ""))
+end
+
 local function teleportTo(pos)
     local hrp = getRoot()
     if not hrp then return false end
@@ -107,10 +115,11 @@ local function teleportTo(pos)
     return true
 end
 
+-- includes disabled prompts, since the dealer prompt may be gated by range
 local function promptsNear(pos, radius)
     local out = {}
     for _, o in ipairs(Workspace:GetDescendants()) do
-        local isP = (o:IsA("ProximityPrompt") and o.Enabled) or o:IsA("ClickDetector")
+        local isP = o:IsA("ProximityPrompt") or o:IsA("ClickDetector")
         if isP and o.Parent then
             local d = (o.Parent:GetPivot().Position - pos).Magnitude
             if d <= radius then table.insert(out, { obj = o, d = d }) end
@@ -126,6 +135,18 @@ local function nativeFire(p)
     elseif p:IsA("ClickDetector") and fireclickdetector then
         pcall(fireclickdetector, p)
     end
+end
+
+-- pick the prompt belonging to the target, falling back to the closest
+local function promptFor(targetName, pos)
+    local hits = promptsNear(pos, CONFIG.Radius)
+    for _, h in ipairs(hits) do
+        if h.obj.Parent and sameName(h.obj.Parent.Name, targetName) then return h.obj end
+    end
+    for _, h in ipairs(hits) do
+        if sameName(h.obj.Name, CONFIG.DealerPrompt) then return h.obj end
+    end
+    return hits[1] and hits[1].obj or nil
 end
 
 ------------------------------------------------------------------ input
@@ -159,6 +180,12 @@ end
 local function lmbUp()
     if mouse1release then pcall(mouse1release) end
     pcall(function() VIM:SendMouseButtonEvent(0, 0, 1, false, 1, game) end)
+end
+
+local function equippedTool()
+    local c = LP.Character
+    if not c then return nil end
+    return c:FindFirstChildOfClass("Tool")
 end
 
 local function hasPackage()
@@ -209,7 +236,7 @@ local hint = new("TextLabel", {
 new("UICorner", { CornerRadius = UDim.new(0, 11) }, hint)
 
 local main = new("Frame", {
-    Size = UDim2.fromOffset(300, 448), Position = UDim2.fromOffset(50, 60),
+    Size = UDim2.fromOffset(300, 478), Position = UDim2.fromOffset(50, 50),
     BackgroundColor3 = Color3.fromRGB(22, 24, 30), BorderSizePixel = 0,
     Active = true, ClipsDescendants = false,
 }, gui)
@@ -240,7 +267,6 @@ UIS.InputEnded:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
--- tabs
 local function tab(text, x)
     local b = new("TextButton", {
         Size = UDim2.fromOffset(80, 26), Position = UDim2.fromOffset(x, 36),
@@ -256,12 +282,12 @@ local mainTabBtn = tab("Main", 8)
 local cfgTabBtn  = tab("Config", 92)
 
 local mainTab = new("Frame", {
-    Size = UDim2.new(1, -16, 0, 366), Position = UDim2.fromOffset(8, 68),
+    Size = UDim2.new(1, -16, 0, 396), Position = UDim2.fromOffset(8, 68),
     BackgroundTransparency = 1,
 }, main)
 
 local cfgTab = new("Frame", {
-    Size = UDim2.new(1, -16, 0, 366), Position = UDim2.fromOffset(8, 68),
+    Size = UDim2.new(1, -16, 0, 396), Position = UDim2.fromOffset(8, 68),
     BackgroundTransparency = 1, Visible = false,
 }, main)
 
@@ -275,7 +301,6 @@ end
 mainTabBtn.MouseButton1Click:Connect(function() selectTab("main") end)
 cfgTabBtn.MouseButton1Click:Connect(function() selectTab("cfg") end)
 
--- status
 local status = new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 30), Position = UDim2.fromOffset(0, 0),
     BackgroundTransparency = 1, TextWrapped = true, TextSize = 11,
@@ -288,18 +313,11 @@ local function setStatus(t, col)
     status.TextColor3 = col or Color3.fromRGB(150, 156, 168)
 end
 
-new("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 32),
-    BackgroundTransparency = 1, Text = "ONLY CHANGE WHEN YOU KNOW WHAT YOU ARE DOING",
-    Font = Enum.Font.GothamBold, TextSize = 9, TextWrapped = true,
-    TextColor3 = Color3.fromRGB(214, 168, 84), TextXAlignment = Enum.TextXAlignment.Left,
-}, mainTab)
-
-local function btn(parent, text, y, color, w, x)
+local function btn(parent, text, y, color, w, x, size)
     local b = new("TextButton", {
         Size = UDim2.fromOffset(w or 268, 26), Position = UDim2.fromOffset(x or 0, y),
         BackgroundColor3 = color, Text = text, TextColor3 = Color3.fromRGB(240, 242, 248),
-        Font = Enum.Font.GothamSemibold, TextSize = 11, BorderSizePixel = 0,
+        Font = Enum.Font.GothamSemibold, TextSize = size or 11, BorderSizePixel = 0,
     }, parent)
     new("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
     return b
@@ -310,12 +328,13 @@ dealerBtn.Size = UDim2.new(1, 0, 0, 30)
 local buyerBtn = btn(mainTab, "Set Buyer", 88, Color3.fromRGB(48, 84, 140))
 buyerBtn.Size = UDim2.new(1, 0, 0, 30)
 
-local autoBtn  = btn(mainTab, "Auto-Find", 124, Color3.fromRGB(52, 58, 70), 86, 0)
-local tapBtn   = btn(mainTab, "Test E+1", 124, Color3.fromRGB(60, 72, 96), 86, 91)
-local clearBtn = btn(mainTab, "Clear", 124, Color3.fromRGB(70, 52, 52), 86, 182)
+local findDealerBtn = btn(mainTab, "Find Dealer", 124, Color3.fromRGB(52, 58, 70), 138, 0)
+local findBuyerBtn  = btn(mainTab, "Find Buyer", 124, Color3.fromRGB(52, 58, 70), 138, 146)
+local tapBtn        = btn(mainTab, "Test E+1", 154, Color3.fromRGB(60, 72, 96), 138, 0)
+local clearBtn      = btn(mainTab, "Clear", 154, Color3.fromRGB(70, 52, 52), 138, 146)
 
 local coordLabel = new("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 20), Position = UDim2.fromOffset(0, 156),
+    Size = UDim2.new(1, 0, 0, 20), Position = UDim2.fromOffset(0, 184),
     BackgroundTransparency = 1, Font = Enum.Font.Code, TextSize = 10,
     TextColor3 = Color3.fromRGB(120, 128, 142), TextXAlignment = Enum.TextXAlignment.Left,
     Text = "dealer: -, -    buyer: -, -",
@@ -326,6 +345,13 @@ local function refreshCoords()
     coordLabel.Text = "dealer: " .. f(CONFIG.DealerPos) .. "    buyer: " .. f(CONFIG.BuyerPos)
 end
 refreshCoords()
+
+new("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 206),
+    BackgroundTransparency = 1, Text = "ONLY CHANGE WHEN YOU KNOW WHAT YOU ARE DOING",
+    Font = Enum.Font.GothamBold, TextSize = 9, TextWrapped = true,
+    TextColor3 = Color3.fromRGB(214, 168, 84), TextXAlignment = Enum.TextXAlignment.Left,
+}, mainTab)
 
 local function field(parent, label, y, get, set, min, max)
     new("TextLabel", {
@@ -425,19 +451,19 @@ local function slider(parent, label, y, get, set, min, max)
     return refresh
 end
 
-local cycleBox = field(mainTab, "Cycle (s)", 180, function() return CONFIG.Cycle end,
+local cycleBox = field(mainTab, "Cycle (s)", 224, function() return CONFIG.Cycle end,
     function(v) CONFIG.Cycle = v end, 5, 300)
-local menuSlider = slider(mainTab, "E to 1 delay", 204, function() return CONFIG.MenuDelay end,
+local menuSlider = slider(mainTab, "E to 1 delay", 248, function() return CONFIG.MenuDelay end,
     function(v) CONFIG.MenuDelay = v end, 0.1, 1.0)
-local tapsBox  = field(mainTab, "E taps", 232, function() return CONFIG.Taps end,
+local tapsBox  = field(mainTab, "E taps", 276, function() return CONFIG.Taps end,
     function(v) CONFIG.Taps = math.floor(v) end, 1, 10)
-local holdBox  = field(mainTab, "Hold (s)", 256, function() return CONFIG.Hold end,
+local holdBox  = field(mainTab, "Hold (s)", 300, function() return CONFIG.Hold end,
     function(v) CONFIG.Hold = v end, 0.05, 1)
-local lmbBox   = field(mainTab, "LMB hold (s)", 280, function() return CONFIG.LmbHold end,
+local lmbBox   = field(mainTab, "LMB hold (s)", 324, function() return CONFIG.LmbHold end,
     function(v) CONFIG.LmbHold = v end, 1, 15)
 
 local toggle = new("TextButton", {
-    Size = UDim2.new(1, 0, 0, 40), Position = UDim2.fromOffset(0, 312),
+    Size = UDim2.new(1, 0, 0, 40), Position = UDim2.fromOffset(0, 352),
     BackgroundColor3 = Color3.fromRGB(40, 140, 74), Text = "START",
     TextColor3 = Color3.fromRGB(245, 248, 250), Font = Enum.Font.GothamBold,
     TextSize = 15, BorderSizePixel = 0,
@@ -459,7 +485,7 @@ local wipeCfgBtn = btn(cfgTab, "Reset All", 34, Color3.fromRGB(70, 52, 52), 86, 
 local autoLoadBtn = btn(cfgTab, "Auto-load: OFF", 66, Color3.fromRGB(52, 58, 70))
 autoLoadBtn.Size = UDim2.new(1, 0, 0, 26)
 
-local cfgInfo = new("TextLabel", {
+new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 96),
     BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
     TextColor3 = Color3.fromRGB(130, 136, 148), TextXAlignment = Enum.TextXAlignment.Left,
@@ -467,7 +493,7 @@ local cfgInfo = new("TextLabel", {
 }, cfgTab)
 
 local cfgBox = new("TextBox", {
-    Size = UDim2.new(1, 0, 0, 244), Position = UDim2.fromOffset(0, 118),
+    Size = UDim2.new(1, 0, 0, 274), Position = UDim2.fromOffset(0, 118),
     BackgroundColor3 = Color3.fromRGB(30, 33, 41), Text = "",
     TextColor3 = Color3.fromRGB(205, 210, 220), Font = Enum.Font.Code, TextSize = 9,
     BorderSizePixel = 0, MultiLine = true, TextWrapped = true,
@@ -519,7 +545,7 @@ end)
 
 wipeCfgBtn.MouseButton1Click:Connect(function()
     CONFIG.DealerPos, CONFIG.BuyerPos = nil, nil
-    CONFIG.Cycle, CONFIG.MenuDelay = 45.5, 0.33
+    CONFIG.Cycle, CONFIG.MenuDelay = 45.5, 1.00
     CONFIG.Taps, CONFIG.Hold, CONFIG.LmbHold = 3, 0.12, 5.3
     cfgBox.Text = ""
     refreshAll(); saveCfg(); setStatus("Reset to defaults")
@@ -531,7 +557,6 @@ autoLoadBtn.MouseButton1Click:Connect(function()
     setStatus(CONFIG.AutoLoad and "Config will auto-load" or "Auto-load off")
 end)
 
--- custom cursor (small, matches the in-game dot)
 local cursor = new("Frame", {
     Size = UDim2.fromOffset(6, 6), BackgroundColor3 = Color3.fromRGB(255, 255, 255),
     BorderSizePixel = 0, ZIndex = 40, Visible = false,
@@ -600,38 +625,77 @@ tapBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
-autoBtn.MouseButton1Click:Connect(function()
-    local hrp = getRoot()
-    if not hrp then return end
-    local best, bestD = nil, math.huge
+------------------------------------------------------------------ finders
+local function findByExactName(name)
     for _, o in ipairs(Workspace:GetDescendants()) do
-        if o:IsA("ProximityPrompt") and o.Enabled and o.Parent then
-            local label = (o.ActionText or "") .. " " .. (o.ObjectText or "") .. " " .. o.Parent.Name
-            if matchAny(label, CONFIG.NpcPatterns) then
-                local d = (o.Parent:GetPivot().Position - hrp.Position).Magnitude
-                if d < bestD then best, bestD = o.Parent:GetPivot().Position, d end
+        if (o:IsA("Model") or o:IsA("BasePart")) and sameName(o.Name, name) then
+            local ok, pos = pcall(function() return o:GetPivot().Position end)
+            if ok and pos then return pos, o.Name end
+        end
+    end
+    return nil
+end
+
+local function nearestByPattern(pats)
+    local hrp = getRoot()
+    if not hrp then return nil, nil end
+    local best, bestD, bestName = nil, math.huge, nil
+    for _, o in ipairs(Workspace:GetDescendants()) do
+        if (o:IsA("Model") or o:IsA("BasePart")) and o.Parent ~= LP.Character and matchAny(o.Name, pats) then
+            local ok, pos = pcall(function() return o:GetPivot().Position end)
+            if ok and pos then
+                local d = (pos - hrp.Position).Magnitude
+                if d < bestD then best, bestD, bestName = pos, d, o.Name end
             end
         end
     end
-    if best then
-        CONFIG.DealerPos = best; refreshCoords(); saveCfg(); setStatus("Dealer auto-found")
-    else
-        setStatus("No dealer prompt found - set manually", Color3.fromRGB(200, 140, 90))
-    end
+    return best, bestName
+end
+
+findDealerBtn.MouseButton1Click:Connect(function()
+    setStatus("Scanning for dealer...")
+    task.spawn(function()
+        local pos, nm = findByExactName(CONFIG.DealerName)
+        local how = "exact name"
+        if not pos then pos, nm = nearestByPattern(CONFIG.NpcPatterns); how = "pattern" end
+        if pos then
+            CONFIG.DealerPos = pos
+            refreshCoords(); saveCfg()
+            setStatus("Dealer set (" .. how .. ": " .. tostring(nm) .. ")", Color3.fromRGB(120, 200, 140))
+        else
+            setStatus("Dealer not loaded - get closer", Color3.fromRGB(200, 140, 90))
+        end
+    end)
+end)
+
+findBuyerBtn.MouseButton1Click:Connect(function()
+    setStatus("Scanning for buyer...")
+    task.spawn(function()
+        local pos, nm = findByExactName(CONFIG.BuyerName)
+        local how = "exact name"
+        if not pos then pos, nm = nearestByPattern(CONFIG.BuyerPatterns); how = "pattern" end
+        if pos then
+            CONFIG.BuyerPos = pos
+            refreshCoords(); saveCfg()
+            setStatus("Buyer set (" .. how .. ": " .. tostring(nm) .. ")", Color3.fromRGB(120, 200, 140))
+        else
+            setStatus("Buyer not loaded - get closer", Color3.fromRGB(200, 140, 90))
+        end
+    end)
 end)
 
 ------------------------------------------------------------------ loop
 local function doDealer()
     teleportTo(CONFIG.DealerPos)
     task.wait(0.3)
-    local hits = promptsNear(CONFIG.DealerPos, CONFIG.Radius)
-    if hits[1] then nativeFire(hits[1].obj) end
+    local p = promptFor(CONFIG.DealerName, CONFIG.DealerPos)
+    if p then nativeFire(p) end
 
     for _ = 1, CONFIG.Taps do
         if not running then return false end
         local had = hasPackage()
         pressE()
-        task.wait(CONFIG.MenuDelay)   -- menu needs to open first
+        task.wait(CONFIG.MenuDelay)
         pressOne()
         if waitFor(function() return not had and hasPackage() end, CONFIG.AcceptWait) then
             setStatus("Package taken", Color3.fromRGB(120, 200, 140))
@@ -650,8 +714,8 @@ end
 local function doBuyer()
     teleportTo(CONFIG.BuyerPos)
     task.wait(0.3)
-    local hits = promptsNear(CONFIG.BuyerPos, CONFIG.Radius)
-    if hits[1] then nativeFire(hits[1].obj) end
+    local p = promptFor(CONFIG.BuyerName, CONFIG.BuyerPos)
+    if p then nativeFire(p) end
 
     for _ = 1, CONFIG.Taps do
         if not running then return false end
@@ -666,7 +730,22 @@ local function doBuyer()
     return false
 end
 
+local function ensureEquipped()
+    if equippedTool() then return true end
+    for _ = 1, 3 do
+        if not running then return false end
+        pressOne()
+        if waitFor(function() return equippedTool() ~= nil end, 0.5) then return true end
+    end
+    return false
+end
+
 local function afterDelivery()
+    if not ensureEquipped() then
+        setStatus("Nothing in slot 1 - LMB skipped", Color3.fromRGB(200, 140, 90))
+        return
+    end
+
     setStatus(string.format("Holding LMB %.1fs", CONFIG.LmbHold))
     lmbDown()
     local t = 0
