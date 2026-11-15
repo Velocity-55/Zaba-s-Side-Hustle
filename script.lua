@@ -2,6 +2,7 @@
     Dealer -> Deliver -> Buyer loop  |  Solara
     RightShift = open/close menu.
     Dealer: E -> adjustable delay -> 1.  Buyer: E.
+    After each delivery: hold RMB, release, press 1.
     Cycle repeats every 45.5s (measured from cycle start).
 ]]
 
@@ -23,6 +24,7 @@ local CONFIG = {
     DeliverWait= 1.5,
     Taps       = 3,
     Hold       = 0.12,
+    RmbHold    = 5.3,
     Radius     = 14,
     NpcPatterns     = { "dealer", "package", "delivery", "courier", "mail" },
     PackagePatterns = { "package", "parcel", "delivery", "box", "mail", "crate" },
@@ -106,7 +108,7 @@ local function nativeFire(p)
     end
 end
 
------------------------------------------------------------------- keys
+------------------------------------------------------------------ input
 local function keyDown(code, str)
     if keypress then pcall(keypress, str) end
     pcall(function() VIM:SendKeyEvent(true, code, false, game) end)
@@ -127,6 +129,16 @@ local function pressOne(hold)
     keyDown(Enum.KeyCode.One, "1")
     task.wait(hold or 0.1)
     keyUp(Enum.KeyCode.One, "1")
+end
+
+local function rmbDown()
+    if mouse2press then pcall(mouse2press) end
+    pcall(function() VIM:SendMouseButtonEvent(0, 0, 2, true, 1, game) end)
+end
+
+local function rmbUp()
+    if mouse2release then pcall(mouse2release) end
+    pcall(function() VIM:SendMouseButtonEvent(0, 0, 2, false, 1, game) end)
 end
 
 local function hasPackage()
@@ -177,7 +189,7 @@ local hint = new("TextLabel", {
 new("UICorner", { CornerRadius = UDim.new(0, 11) }, hint)
 
 local main = new("Frame", {
-    Size = UDim2.fromOffset(262, 360), Position = UDim2.fromOffset(60, 100),
+    Size = UDim2.fromOffset(262, 388), Position = UDim2.fromOffset(60, 90),
     BackgroundColor3 = Color3.fromRGB(22, 24, 30), BorderSizePixel = 0,
     Active = true, ClipsDescendants = false,
 }, gui)
@@ -358,9 +370,11 @@ local tapsBox  = field("E taps", 258, function() return CONFIG.Taps end,
     function(v) CONFIG.Taps = math.floor(v) end, 1, 10)
 local holdBox  = field("Hold (s)", 282, function() return CONFIG.Hold end,
     function(v) CONFIG.Hold = v end, 0.05, 1)
+local rmbBox   = field("RMB hold (s)", 306, function() return CONFIG.RmbHold end,
+    function(v) CONFIG.RmbHold = v end, 1, 15)
 
 local toggle = new("TextButton", {
-    Size = UDim2.new(1, -16, 0, 40), Position = UDim2.fromOffset(8, 310),
+    Size = UDim2.new(1, -16, 0, 40), Position = UDim2.fromOffset(8, 338),
     BackgroundColor3 = Color3.fromRGB(40, 140, 74), Text = "START",
     TextColor3 = Color3.fromRGB(245, 248, 250), Font = Enum.Font.GothamBold,
     TextSize = 15, BorderSizePixel = 0,
@@ -464,22 +478,23 @@ local function doDealer()
     if hits[1] then nativeFire(hits[1].obj) end
 
     for _ = 1, CONFIG.Taps do
-        if not running then return end
+        if not running then return false end
         local had = hasPackage()
         pressE()
         task.wait(CONFIG.MenuDelay)   -- menu needs to open first
         pressOne()
         if waitFor(function() return not had and hasPackage() end, CONFIG.AcceptWait) then
             setStatus("Package taken", Color3.fromRGB(120, 200, 140))
-            return
+            return true
         end
         if hasPackage() then
             setStatus("Already holding a package", Color3.fromRGB(120, 200, 140))
-            return
+            return true
         end
         task.wait(0.3)
     end
     setStatus("Dealer: package not taken", Color3.fromRGB(200, 140, 90))
+    return false
 end
 
 local function doBuyer()
@@ -489,15 +504,31 @@ local function doBuyer()
     if hits[1] then nativeFire(hits[1].obj) end
 
     for _ = 1, CONFIG.Taps do
-        if not running then return end
+        if not running then return false end
         pressE()
         if waitFor(function() return not hasPackage() end, CONFIG.DeliverWait) then
             setStatus("Delivered", Color3.fromRGB(120, 200, 140))
-            return
+            return true
         end
         task.wait(0.25)
     end
     setStatus("Buyer: still holding package", Color3.fromRGB(200, 140, 90))
+    return false
+end
+
+local function afterDelivery()
+    setStatus(string.format("Holding RMB %.1fs", CONFIG.RmbHold))
+    rmbDown()
+    local t = 0
+    while running and t < CONFIG.RmbHold do
+        task.wait(0.1)
+        t = t + 0.1
+    end
+    rmbUp()
+    task.wait(0.15)
+    if not running then return end
+    pressOne()
+    setStatus("Post-delivery 1 sent", Color3.fromRGB(120, 200, 140))
 end
 
 local function loop()
@@ -507,9 +538,13 @@ local function loop()
             task.wait(0.6)
         else
             local t0 = os.clock()
-            doDealer()
+            local got = doDealer()
             if not running then break end
-            doBuyer()
+            if got then
+                local sent = doBuyer()
+                if not running then break end
+                if sent then afterDelivery() end
+            end
             if not running then break end
 
             -- hold the 45.5s cadence from the start of this cycle
@@ -546,6 +581,7 @@ setMenu(false)
 
 getgenv().DQL_Unload = function()
     running = false
+    rmbUp()
     if camConn then camConn:Disconnect() end
     UIS.MouseBehavior = Enum.MouseBehavior.Default
     UIS.MouseIconEnabled = true
