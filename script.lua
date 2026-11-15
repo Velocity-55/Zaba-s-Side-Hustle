@@ -2,7 +2,7 @@
     Dealer -> Deliver -> Buyer loop  |  Solara
     RightShift = open/close menu.
     Dealer: E -> adjustable delay -> 1.  Buyer: E.
-    After each delivery: hold RMB, release, press 1.
+    After each delivery: hold LMB, release, press 1.
     Cycle repeats every 45.5s (measured from cycle start).
 ]]
 
@@ -13,6 +13,7 @@ local Workspace  = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
 local VIM        = game:GetService("VirtualInputManager")
+local HS         = game:GetService("HttpService")
 local LP = Players.LocalPlayer
 
 local CONFIG = {
@@ -24,8 +25,9 @@ local CONFIG = {
     DeliverWait= 1.5,
     Taps       = 3,
     Hold       = 0.12,
-    RmbHold    = 5.3,
+    LmbHold    = 5.3,
     Radius     = 14,
+    AutoLoad   = false,
     NpcPatterns     = { "dealer", "package", "delivery", "courier", "mail" },
     PackagePatterns = { "package", "parcel", "delivery", "box", "mail", "crate" },
 }
@@ -34,33 +36,51 @@ local FILE = "DQL_config.json"
 local running, menuOpen = false, false
 local camConn
 
------------------------------------------------------------------- io
-local function saveCfg()
-    if not writefile then return end
+------------------------------------------------------------------ storage
+local function encodeCfg()
     local d = {}
     for k, v in pairs(CONFIG) do
         if type(v) ~= "table" then
             d[k] = typeof(v) == "Vector3" and { v.X, v.Y, v.Z } or v
         end
     end
-    pcall(writefile, FILE, game:GetService("HttpService"):JSONEncode(d))
+    return HS:JSONEncode(d)
 end
 
-local function loadCfg()
-    if not (isfile and readfile and isfile(FILE)) then return end
-    local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(FILE)) end)
-    if not ok or type(data) ~= "table" then return end
+local function applyCfg(data)
     for k, v in pairs(data) do
-        if CONFIG[k] ~= nil then
+        if CONFIG[k] ~= nil and k ~= "AutoLoad" then
             if type(v) == "table" and #v == 3 then
                 CONFIG[k] = Vector3.new(v[1], v[2], v[3])
-            else
+            elseif type(v) ~= "table" then
                 CONFIG[k] = v
             end
         end
     end
 end
-loadCfg()
+
+local function saveCfg()
+    local ok, json = pcall(encodeCfg)
+    if not ok then return nil end
+    if writefile then pcall(writefile, FILE, json) end
+    return json
+end
+
+local function readCfgFile()
+    if not (isfile and readfile and isfile(FILE)) then return nil end
+    local ok, data = pcall(function() return HS:JSONDecode(readfile(FILE)) end)
+    if ok and type(data) == "table" then return data end
+    return nil
+end
+
+-- auto-load gate: read the flag first, apply everything only if it was on
+do
+    local startup = readCfgFile()
+    if startup then
+        CONFIG.AutoLoad = startup.AutoLoad == true
+        if CONFIG.AutoLoad then applyCfg(startup) end
+    end
+end
 
 ------------------------------------------------------------------ helpers
 local function getRoot()
@@ -131,14 +151,14 @@ local function pressOne(hold)
     keyUp(Enum.KeyCode.One, "1")
 end
 
-local function rmbDown()
-    if mouse2press then pcall(mouse2press) end
-    pcall(function() VIM:SendMouseButtonEvent(0, 0, 2, true, 1, game) end)
+local function lmbDown()
+    if mouse1press then pcall(mouse1press) end
+    pcall(function() VIM:SendMouseButtonEvent(0, 0, 1, true, 1, game) end)
 end
 
-local function rmbUp()
-    if mouse2release then pcall(mouse2release) end
-    pcall(function() VIM:SendMouseButtonEvent(0, 0, 2, false, 1, game) end)
+local function lmbUp()
+    if mouse1release then pcall(mouse1release) end
+    pcall(function() VIM:SendMouseButtonEvent(0, 0, 1, false, 1, game) end)
 end
 
 local function hasPackage()
@@ -189,7 +209,7 @@ local hint = new("TextLabel", {
 new("UICorner", { CornerRadius = UDim.new(0, 11) }, hint)
 
 local main = new("Frame", {
-    Size = UDim2.fromOffset(262, 388), Position = UDim2.fromOffset(60, 90),
+    Size = UDim2.fromOffset(300, 448), Position = UDim2.fromOffset(50, 60),
     BackgroundColor3 = Color3.fromRGB(22, 24, 30), BorderSizePixel = 0,
     Active = true, ClipsDescendants = false,
 }, gui)
@@ -220,43 +240,86 @@ UIS.InputEnded:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
+-- tabs
+local function tab(text, x)
+    local b = new("TextButton", {
+        Size = UDim2.fromOffset(80, 26), Position = UDim2.fromOffset(x, 36),
+        BackgroundColor3 = Color3.fromRGB(38, 42, 51), Text = text,
+        TextColor3 = Color3.fromRGB(190, 196, 208), Font = Enum.Font.GothamSemibold,
+        TextSize = 11, BorderSizePixel = 0,
+    }, main)
+    new("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+    return b
+end
+
+local mainTabBtn = tab("Main", 8)
+local cfgTabBtn  = tab("Config", 92)
+
+local mainTab = new("Frame", {
+    Size = UDim2.new(1, -16, 0, 366), Position = UDim2.fromOffset(8, 68),
+    BackgroundTransparency = 1,
+}, main)
+
+local cfgTab = new("Frame", {
+    Size = UDim2.new(1, -16, 0, 366), Position = UDim2.fromOffset(8, 68),
+    BackgroundTransparency = 1, Visible = false,
+}, main)
+
+local function selectTab(which)
+    local onMain = which == "main"
+    mainTab.Visible = onMain
+    cfgTab.Visible = not onMain
+    mainTabBtn.BackgroundColor3 = onMain and Color3.fromRGB(48, 84, 140) or Color3.fromRGB(38, 42, 51)
+    cfgTabBtn.BackgroundColor3 = onMain and Color3.fromRGB(38, 42, 51) or Color3.fromRGB(48, 84, 140)
+end
+mainTabBtn.MouseButton1Click:Connect(function() selectTab("main") end)
+cfgTabBtn.MouseButton1Click:Connect(function() selectTab("cfg") end)
+
+-- status
 local status = new("TextLabel", {
-    Size = UDim2.new(1, -16, 0, 34), Position = UDim2.fromOffset(8, 36),
+    Size = UDim2.new(1, 0, 0, 30), Position = UDim2.fromOffset(0, 0),
     BackgroundTransparency = 1, TextWrapped = true, TextSize = 11,
     Font = Enum.Font.Gotham, TextColor3 = Color3.fromRGB(150, 156, 168),
     Text = "Set both positions, then press START", TextXAlignment = Enum.TextXAlignment.Left,
-}, main)
+}, mainTab)
 
 local function setStatus(t, col)
     status.Text = t
     status.TextColor3 = col or Color3.fromRGB(150, 156, 168)
 end
 
-local function btn(text, y, color, w, x)
+new("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 32),
+    BackgroundTransparency = 1, Text = "ONLY CHANGE WHEN YOU KNOW WHAT YOU ARE DOING",
+    Font = Enum.Font.GothamBold, TextSize = 9, TextWrapped = true,
+    TextColor3 = Color3.fromRGB(214, 168, 84), TextXAlignment = Enum.TextXAlignment.Left,
+}, mainTab)
+
+local function btn(parent, text, y, color, w, x)
     local b = new("TextButton", {
-        Size = UDim2.fromOffset(w or 246, 26), Position = UDim2.fromOffset(x or 8, y),
+        Size = UDim2.fromOffset(w or 268, 26), Position = UDim2.fromOffset(x or 0, y),
         BackgroundColor3 = color, Text = text, TextColor3 = Color3.fromRGB(240, 242, 248),
         Font = Enum.Font.GothamSemibold, TextSize = 11, BorderSizePixel = 0,
-    }, main)
+    }, parent)
     new("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
     return b
 end
 
-local dealerBtn = btn("Set Dealer", 76, Color3.fromRGB(48, 84, 140))
-dealerBtn.Size = UDim2.new(1, -16, 0, 30)
-local buyerBtn = btn("Set Buyer", 112, Color3.fromRGB(48, 84, 140))
-buyerBtn.Size = UDim2.new(1, -16, 0, 30)
+local dealerBtn = btn(mainTab, "Set Dealer", 52, Color3.fromRGB(48, 84, 140))
+dealerBtn.Size = UDim2.new(1, 0, 0, 30)
+local buyerBtn = btn(mainTab, "Set Buyer", 88, Color3.fromRGB(48, 84, 140))
+buyerBtn.Size = UDim2.new(1, 0, 0, 30)
 
-local autoBtn  = btn("Auto-Find", 148, Color3.fromRGB(52, 58, 70), 78, 8)
-local tapBtn   = btn("Test E+1", 148, Color3.fromRGB(60, 72, 96), 78, 92)
-local clearBtn = btn("Clear", 148, Color3.fromRGB(70, 52, 52), 78, 176)
+local autoBtn  = btn(mainTab, "Auto-Find", 124, Color3.fromRGB(52, 58, 70), 86, 0)
+local tapBtn   = btn(mainTab, "Test E+1", 124, Color3.fromRGB(60, 72, 96), 86, 91)
+local clearBtn = btn(mainTab, "Clear", 124, Color3.fromRGB(70, 52, 52), 86, 182)
 
 local coordLabel = new("TextLabel", {
-    Size = UDim2.new(1, -16, 0, 22), Position = UDim2.fromOffset(8, 180),
+    Size = UDim2.new(1, 0, 0, 20), Position = UDim2.fromOffset(0, 156),
     BackgroundTransparency = 1, Font = Enum.Font.Code, TextSize = 10,
     TextColor3 = Color3.fromRGB(120, 128, 142), TextXAlignment = Enum.TextXAlignment.Left,
     Text = "dealer: -, -    buyer: -, -",
-}, main)
+}, mainTab)
 
 local function refreshCoords()
     local function f(v) return v and string.format("%d, %d", v.X, v.Z) or "-, -" end
@@ -264,19 +327,19 @@ local function refreshCoords()
 end
 refreshCoords()
 
-local function field(label, y, get, set, min, max)
+local function field(parent, label, y, get, set, min, max)
     new("TextLabel", {
-        Size = UDim2.new(0, 96, 0, 18), Position = UDim2.fromOffset(8, y),
+        Size = UDim2.fromOffset(110, 18), Position = UDim2.fromOffset(0, y),
         BackgroundTransparency = 1, Text = label, Font = Enum.Font.Gotham,
         TextSize = 11, TextColor3 = Color3.fromRGB(160, 166, 178),
         TextXAlignment = Enum.TextXAlignment.Left,
-    }, main)
+    }, parent)
     local box = new("TextBox", {
-        Size = UDim2.fromOffset(54, 20), Position = UDim2.fromOffset(190, y - 1),
+        Size = UDim2.fromOffset(58, 20), Position = UDim2.fromOffset(226, y - 1),
         BackgroundColor3 = Color3.fromRGB(34, 37, 45), Text = tostring(get()),
         TextColor3 = Color3.fromRGB(230, 234, 240), Font = Enum.Font.Code, TextSize = 12,
         BorderSizePixel = 0, ClearTextOnFocus = false,
-    }, main)
+    }, parent)
     new("UICorner", { CornerRadius = UDim.new(0, 4) }, box)
     box.FocusLost:Connect(function()
         local n = tonumber(box.Text)
@@ -287,18 +350,18 @@ local function field(label, y, get, set, min, max)
     return box
 end
 
-local function slider(label, y, get, set, min, max)
+local function slider(parent, label, y, get, set, min, max)
     new("TextLabel", {
-        Size = UDim2.new(0, 96, 0, 18), Position = UDim2.fromOffset(8, y),
+        Size = UDim2.fromOffset(110, 18), Position = UDim2.fromOffset(0, y),
         BackgroundTransparency = 1, Text = label, Font = Enum.Font.Gotham,
         TextSize = 11, TextColor3 = Color3.fromRGB(160, 166, 178),
         TextXAlignment = Enum.TextXAlignment.Left,
-    }, main)
+    }, parent)
 
     local track = new("Frame", {
-        Size = UDim2.fromOffset(120, 6), Position = UDim2.fromOffset(96, y + 6),
+        Size = UDim2.fromOffset(130, 6), Position = UDim2.fromOffset(88, y + 6),
         BackgroundColor3 = Color3.fromRGB(44, 48, 58), BorderSizePixel = 0,
-    }, main)
+    }, parent)
     new("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
 
     local fill = new("Frame", {
@@ -315,11 +378,11 @@ local function slider(label, y, get, set, min, max)
     new("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
 
     local box = new("TextBox", {
-        Size = UDim2.fromOffset(52, 20), Position = UDim2.fromOffset(228, y - 1),
+        Size = UDim2.fromOffset(58, 20), Position = UDim2.fromOffset(226, y - 1),
         BackgroundColor3 = Color3.fromRGB(34, 37, 45), Text = string.format("%.2f", get()),
         TextColor3 = Color3.fromRGB(230, 234, 240), Font = Enum.Font.Code, TextSize = 11,
         BorderSizePixel = 0, ClearTextOnFocus = false,
-    }, main)
+    }, parent)
     new("UICorner", { CornerRadius = UDim.new(0, 4) }, box)
 
     local function refresh()
@@ -362,24 +425,111 @@ local function slider(label, y, get, set, min, max)
     return refresh
 end
 
-local cycleBox = field("Cycle (s)", 206, function() return CONFIG.Cycle end,
+local cycleBox = field(mainTab, "Cycle (s)", 180, function() return CONFIG.Cycle end,
     function(v) CONFIG.Cycle = v end, 5, 300)
-local menuSlider = slider("E to 1 delay", 230, function() return CONFIG.MenuDelay end,
+local menuSlider = slider(mainTab, "E to 1 delay", 204, function() return CONFIG.MenuDelay end,
     function(v) CONFIG.MenuDelay = v end, 0.1, 1.0)
-local tapsBox  = field("E taps", 258, function() return CONFIG.Taps end,
+local tapsBox  = field(mainTab, "E taps", 232, function() return CONFIG.Taps end,
     function(v) CONFIG.Taps = math.floor(v) end, 1, 10)
-local holdBox  = field("Hold (s)", 282, function() return CONFIG.Hold end,
+local holdBox  = field(mainTab, "Hold (s)", 256, function() return CONFIG.Hold end,
     function(v) CONFIG.Hold = v end, 0.05, 1)
-local rmbBox   = field("RMB hold (s)", 306, function() return CONFIG.RmbHold end,
-    function(v) CONFIG.RmbHold = v end, 1, 15)
+local lmbBox   = field(mainTab, "LMB hold (s)", 280, function() return CONFIG.LmbHold end,
+    function(v) CONFIG.LmbHold = v end, 1, 15)
 
 local toggle = new("TextButton", {
-    Size = UDim2.new(1, -16, 0, 40), Position = UDim2.fromOffset(8, 338),
+    Size = UDim2.new(1, 0, 0, 40), Position = UDim2.fromOffset(0, 312),
     BackgroundColor3 = Color3.fromRGB(40, 140, 74), Text = "START",
     TextColor3 = Color3.fromRGB(245, 248, 250), Font = Enum.Font.GothamBold,
     TextSize = 15, BorderSizePixel = 0,
-}, main)
+}, mainTab)
 new("UICorner", { CornerRadius = UDim.new(0, 6) }, toggle)
+
+------------------------------------------------------------------ config tab
+new("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, TextWrapped = true,
+    Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = Color3.fromRGB(140, 146, 158),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Text = "Config stores both positions and every setting. Save writes a file and puts a code below you can copy. Load reads the file, or paste a code and press Load.",
+}, cfgTab)
+
+local saveCfgBtn = btn(cfgTab, "Save Config", 34, Color3.fromRGB(48, 84, 140), 86, 0)
+local loadCfgBtn = btn(cfgTab, "Load Config", 34, Color3.fromRGB(48, 84, 140), 86, 91)
+local wipeCfgBtn = btn(cfgTab, "Reset All", 34, Color3.fromRGB(70, 52, 52), 86, 182)
+
+local autoLoadBtn = btn(cfgTab, "Auto-load: OFF", 66, Color3.fromRGB(52, 58, 70))
+autoLoadBtn.Size = UDim2.new(1, 0, 0, 26)
+
+local cfgInfo = new("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 96),
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
+    TextColor3 = Color3.fromRGB(130, 136, 148), TextXAlignment = Enum.TextXAlignment.Left,
+    Text = writefile and "File storage available." or "No file storage - use the code box.",
+}, cfgTab)
+
+local cfgBox = new("TextBox", {
+    Size = UDim2.new(1, 0, 0, 244), Position = UDim2.fromOffset(0, 118),
+    BackgroundColor3 = Color3.fromRGB(30, 33, 41), Text = "",
+    TextColor3 = Color3.fromRGB(205, 210, 220), Font = Enum.Font.Code, TextSize = 9,
+    BorderSizePixel = 0, MultiLine = true, TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    ClearTextOnFocus = false, PlaceholderText = "config code appears here",
+}, cfgTab)
+new("UICorner", { CornerRadius = UDim.new(0, 5) }, cfgBox)
+new("UIStroke", { Color = Color3.fromRGB(50, 54, 64), Thickness = 1 }, cfgBox)
+
+local function refreshAll()
+    refreshCoords()
+    cycleBox.Text = tostring(CONFIG.Cycle)
+    menuSlider()
+    tapsBox.Text = tostring(CONFIG.Taps)
+    holdBox.Text = tostring(CONFIG.Hold)
+    lmbBox.Text = tostring(CONFIG.LmbHold)
+end
+
+local function paintAutoLoad()
+    autoLoadBtn.Text = "Auto-load: " .. (CONFIG.AutoLoad and "ON" or "OFF")
+    autoLoadBtn.BackgroundColor3 = CONFIG.AutoLoad and Color3.fromRGB(40, 130, 72) or Color3.fromRGB(52, 58, 70)
+end
+paintAutoLoad()
+
+saveCfgBtn.MouseButton1Click:Connect(function()
+    local json = saveCfg()
+    if not json then setStatus("Could not encode config", Color3.fromRGB(200, 140, 90)) return end
+    cfgBox.Text = json
+    if setclipboard then pcall(setclipboard, json) end
+    setStatus(writefile and "Saved and copied" or "Copied - no file support", Color3.fromRGB(120, 200, 140))
+end)
+
+loadCfgBtn.MouseButton1Click:Connect(function()
+    local data
+    if cfgBox.Text ~= "" then
+        local ok, parsed = pcall(function() return HS:JSONDecode(cfgBox.Text) end)
+        if ok and type(parsed) == "table" then data = parsed end
+    end
+    if not data then data = readCfgFile() end
+    if not data then
+        setStatus("Nothing to load", Color3.fromRGB(200, 140, 90))
+        return
+    end
+    applyCfg(data)
+    refreshAll()
+    saveCfg()
+    setStatus("Config loaded", Color3.fromRGB(120, 200, 140))
+end)
+
+wipeCfgBtn.MouseButton1Click:Connect(function()
+    CONFIG.DealerPos, CONFIG.BuyerPos = nil, nil
+    CONFIG.Cycle, CONFIG.MenuDelay = 45.5, 0.33
+    CONFIG.Taps, CONFIG.Hold, CONFIG.LmbHold = 3, 0.12, 5.3
+    cfgBox.Text = ""
+    refreshAll(); saveCfg(); setStatus("Reset to defaults")
+end)
+
+autoLoadBtn.MouseButton1Click:Connect(function()
+    CONFIG.AutoLoad = not CONFIG.AutoLoad
+    paintAutoLoad(); saveCfg()
+    setStatus(CONFIG.AutoLoad and "Config will auto-load" or "Auto-load off")
+end)
 
 -- custom cursor (small, matches the in-game dot)
 local cursor = new("Frame", {
@@ -517,14 +667,14 @@ local function doBuyer()
 end
 
 local function afterDelivery()
-    setStatus(string.format("Holding RMB %.1fs", CONFIG.RmbHold))
-    rmbDown()
+    setStatus(string.format("Holding LMB %.1fs", CONFIG.LmbHold))
+    lmbDown()
     local t = 0
-    while running and t < CONFIG.RmbHold do
+    while running and t < CONFIG.LmbHold do
         task.wait(0.1)
         t = t + 0.1
     end
-    rmbUp()
+    lmbUp()
     task.wait(0.15)
     if not running then return end
     pressOne()
@@ -547,7 +697,6 @@ local function loop()
             end
             if not running then break end
 
-            -- hold the 45.5s cadence from the start of this cycle
             local left = CONFIG.Cycle - (os.clock() - t0)
             while running and left > 0 do
                 setStatus(string.format("Next quest in %.1fs", left))
@@ -577,11 +726,13 @@ toggle.MouseButton1Click:Connect(function()
     end
 end)
 
+selectTab("main")
+refreshAll()
 setMenu(false)
 
 getgenv().DQL_Unload = function()
     running = false
-    rmbUp()
+    lmbUp()
     if camConn then camConn:Disconnect() end
     UIS.MouseBehavior = Enum.MouseBehavior.Default
     UIS.MouseIconEnabled = true
